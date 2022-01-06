@@ -50,13 +50,13 @@
          // Program counter logic
          $pc[31:0] = >>1$reset ? '0 :
                      >>3$valid_taken_br            ? >>3$br_tgt_pc :
+                     >>3$valid_load                ? >>3$inc_pc :
                      >>3$valid_jump && >>3$is_jal  ? >>3$br_tgt_pc :
                      >>3$valid_jump && >>3$is_jalr ? >>3$jalr_tgt_pc :
-                     >>3$valid_load                ? >>3$inc_pc :
                      >>1$inc_pc;
          
          // Instruction Memory
-         $imem_rd_addr[M4_IMEM_INDEX_CNT-1:0] = $pc[M4_IMEM_INDEX_CNT+1:2];
+         $imem_rd_addr[M4_IMEM_INDEX_CNT+1:0] = $pc[M4_IMEM_INDEX_CNT+1:2];
          $imem_rd_en = $reset ? 1'b0: 1'b1;
          
       @1
@@ -67,7 +67,8 @@
          // Decode logic
          $is_i_instr = $instr[6:2] ==? 5'b0000x ||
                        $instr[6:2] ==? 5'b001x0 ||
-                       $instr[6:2] == 5'b11001;
+                       $instr[6:2] == 5'b11001  ||
+                       $instr[6:2] == 5'b11100;
          $is_r_instr = $instr[6:2] == 5'b01011 ||
                        $instr[6:2] ==? 5'b011x0 ||
                        $instr[6:2] == 5'b10100;
@@ -82,17 +83,23 @@
                       $is_u_instr ? { $instr[31], $instr[30:20], $instr[19:12], {12{1'b0}} } :
                       $is_j_instr ? { {11{$instr[31]}}, $instr[19:12], $instr[20], $instr[30:25], $instr[24:21], 1'b0 } : 32'd0;
          
-         $funct7[6:0] = $instr[31:25];
          $funct7_valid = $is_r_instr;
-         $funct3[2:0] = $instr[14:12];
          $funct3_valid = $is_r_instr || $is_i_instr || $is_s_instr || $is_b_instr;
-         $rs1[4:0] = $instr[19:15];
          $rs1_valid = $is_r_instr || $is_i_instr || $is_s_instr || $is_b_instr;
-         $rs2[4:0] = $instr[24:20];
          $rs2_valid = $is_r_instr || $is_s_instr || $is_b_instr;
-         $rd[4:0] = $instr[11:7];
          $rd_valid = $is_r_instr || $is_i_instr || $is_u_instr || $is_j_instr;
          
+         ?$funct7_valid
+            $funct7[6:0] = $instr[31:25];
+         ?$funct3_valid
+            $funct3[2:0] = $instr[14:12];
+         ?$rs1_valid
+            $rs1[4:0] = $instr[19:15];
+         ?$rs2_valid
+            $rs2[4:0] = $instr[24:20];
+         ?$rd_valid
+            $rd[4:0] = $instr[11:7];
+
          $opcode[6:0] = $instr[6:0];
          
          // RV32I base intruction set decoding(except FENCE, ECALL, EBREAK)
@@ -138,6 +145,7 @@
       @2
          // Branch target update
          $br_tgt_pc[31:0] = $pc + $imm;
+         $jalr_tgt_pc[31:0] = $src1_value + $imm;
          
          // Register file read
          $rf_rd_en1 = $rs1_valid;
@@ -154,7 +162,7 @@
          $result[31:0] = $is_andi ? $src1_value & $imm :
                          $is_ori  ? $src1_value | $imm :
                          $is_xori ? $src1_value ^ $imm :
-                         $is_addi ? $src1_value + $imm :
+                         ($is_addi || $is_load || $is_store) ? $src1_value + $imm :
                          $is_slli ? $src1_value << $imm[5:0] :
                          $is_srli ? $src1_value >> $imm[5:0] :
                          $is_sltiu? $sltiu_rslt :
@@ -176,7 +184,7 @@
                          32'bx;
          
          // Register file write
-         $rf_wr_en = $rd_valid && ($rd != 5'd0) && $valid ||
+         $rf_wr_en = ($rd_valid && ($rd != 5'd0) && $valid) ||
                      >>2$valid_load;
          $rf_wr_index[4:0] = >>2$valid_load ? >>2$rd : $rd;
          $rf_wr_data[31:0] = >>2$valid_load ? >>2$ld_data[31:0] : $result;
@@ -191,17 +199,15 @@
                      $is_bgeu ? $src1_value >= $src2_value : 1'b0;
          
          $is_jump     = $is_jal || $is_jalr;
-         $jalr_tgt_pc = $src1_value + $imm;
          
          $valid_taken_br = $valid && $taken_br;
          $valid_load     = $valid && $is_load;
          $valid_jump     = $valid && $is_jump;
          
          // Valid
-         $valid = >>1$reset ? 1'b0 :
-                  !(>>1$valid_taken_br || >>2$valid_taken_br) ||
-                  !(>>1$valid_load || >>2$valid_load) ||
-                  !(>>1$valid_jump || >>2$valid_jump);
+         $valid = !(>>1$valid_taken_br || >>2$valid_taken_br ||
+                    >>1$valid_load     || >>2$valid_load     ||
+                    >>1$valid_jump     || >>2$valid_jump);
          
       @4
          // Data memory
